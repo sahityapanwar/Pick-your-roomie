@@ -5,7 +5,7 @@
  * (localStorage), since those are per-device, not shared.
  */
 
-const API_BASE = (window.GSV_API_BASE) || "http://localhost:5000";
+const API_BASE = (window.GSV_API_BASE) || "https://pick-your-roommate.onrender.com";
 const ADMIN_PASSWORD_HINT = "Ask the hostel office for the admin password.";
 
 const STATUS_META = {
