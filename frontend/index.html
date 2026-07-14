@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RoomMatch · GSV College Hostel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+<div id="app" class="gsv-root light">
+
+  <div class="gsv-blob gsv-blob-a"></div>
+  <div class="gsv-blob gsv-blob-b"></div>
+  <div class="gsv-blob gsv-blob-c"></div>
+
+  <!-- Navbar -->
+  <header class="sticky-nav">
+    <div class="gsv-glass navbar">
+      <button id="btn-home" class="brand">
+        <div class="brand-icon">🏠</div>
+        <div class="brand-text">
+          <div class="brand-title">RoomMatch</div>
+          <div class="brand-sub">GSV College Hostel</div>
+        </div>
+      </button>
+
+      <nav id="nav-links" class="nav-links">
+        <button data-scroll="directory">Directory</button>
+        <button data-scroll="duos">Duos</button>
+        <button data-scroll="trios">Trios</button>
+        <button data-scroll="faq">FAQ</button>
+      </nav>
+
+      <div class="nav-actions">
+        <button id="btn-theme" class="icon-btn" aria-label="Toggle theme">🌙</button>
+        <button id="btn-bell" class="icon-btn hidden" aria-label="Requests">
+          🔔<span id="bell-count" class="bell-count hidden">0</span>
+        </button>
+        <div id="user-chip" class="user-chip hidden">
+          <div id="user-avatar" class="avatar avatar-sm"></div>
+          <button id="btn-logout" class="outline-btn small">Log out</button>
+        </div>
+        <button id="btn-login" class="grad-btn small">Log in</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main-home" class="main-content">
+    <!-- Hero -->
+    <section class="hero">
+      <div class="pill">✨ Batch of 2029 · New Hostel Allotment</div>
+      <h1>Pick your room, <span class="grad-text">before the room picks for you.</span></h1>
+      <p class="hero-sub">34 triple-sharing rooms. 102 second-year students. Find two roommates you actually want to live with, before allotment finalizes.</p>
+      <div class="hero-actions">
+        <button id="btn-find-roommates" class="grad-btn">＋ Find Roommates</button>
+        <button data-scroll="directory" class="outline-btn">Browse Directory</button>
+      </div>
+    </section>
+
+    <!-- Stats -->
+    <section class="stats-grid" id="stats-grid"></section>
+
+   
+
+    <!-- Directory -->
+    <section id="directory" class="section">
+      <div class="section-head">
+        <div>
+          <h2>Student Directory</h2>
+          <p class="muted">All 102 eligible students, live.</p>
+        </div>
+      </div>
+      <div class="gsv-glass filter-bar">
+        <div class="search-wrap">
+          <span class="search-icon">🔎</span>
+          <input id="search-input" placeholder="Search by name or roll number…" />
+        </div>
+        <div id="filter-tabs" class="filter-tabs">
+          <button data-filter="all" class="filter-tab active">All</button>
+          <button data-filter="looking" class="filter-tab">Looking</button>
+          <button data-filter="duo" class="filter-tab">Duo</button>
+          <button data-filter="trio" class="filter-tab">Trio</button>
+        </div>
+      </div>
+      <div id="directory-grid" class="card-grid"></div>
+    </section>
+
+    <!-- Duos -->
+    <section id="duos" class="section">
+      <h2>Duos</h2>
+      <p class="muted">These pairs need one more roommate.</p>
+      <div id="duos-grid" class="card-grid"></div>
+    </section>
+
+    <!-- Trios -->
+    <section id="trios" class="section">
+      <h2>Trios</h2>
+      <p class="muted">Rooms that are fully matched.</p>
+      <div id="trios-grid" class="card-grid"></div>
+    </section>
+
+    <!-- About -->
+    <section class="section">
+      <h2>How Room Allotment Works</h2>
+      <div class="steps-grid">
+        <div class="card step-card"><div class="step-num">1</div><div class="step-title">Form a trio</div><div class="step-body muted">Invite a roommate to form a duo. From there, either invite a third student yourselves — your partner must approve before it's sent — or let a student request to join, which both of you need to accept.</div></div>
+        <div class="card step-card"><div class="step-num">2</div><div class="step-title">Lock it in before 1 August</div><div class="step-body muted">Once your trio is complete, the original two roommates can lock it in to finalize your lineup. Unlocking it again needs all three of you to agree.</div></div>
+        <div class="card step-card"><div class="step-num">3</div><div class="step-title">Go to college and get your room.</div><div class="step-body muted">There's no hostel office or warden assigning rooms — you and your trio simply move into the hostel and choose your favorite available room yourselves, on a first-come, first-served basis.</div></div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" class="section faq-section">
+      <h2>❓ Frequently Asked Questions</h2>
+      <div id="faq-list" class="faq-list"></div>
+    </section>
+
+    <!-- Contact -->
+    <section class="section contact-section">
+      <div class="card contact-card">
+        <h2>Need Help?</h2>
+        <p class="muted">Reach the hostel office at <strong>hostel@gsv.edu.in</strong> for anything this page can't resolve.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- Admin view -->
+  <main id="main-admin" class="main-content hidden"></main>
+
+  <footer class="footer">
+    <div>© 2026 GSV College Hostel · RoomMatch</div>
+    <button id="btn-admin" class="link-btn">Admin</button>
+  </footer>
+
+  <div id="toast-stack" class="toast-stack"></div>
+  <div id="modal-root"></div>
+</div>
+
+<script>
+  // Point this at wherever backend/app.py is actually running.
+  window.GSV_API_BASE = "http://localhost:5000";
+</script>
+<script src="js/app.js"></script>
+</body>
+</html>
