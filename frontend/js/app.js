@@ -409,7 +409,8 @@ function showLoginModal() {
     <form id="login-form">
       <div class="field"><label>Roll Number</label><input id="login-roll" class="mono" placeholder="25AI1034" required /></div>
       <div class="field"><label>Password</label><input id="login-pass" type="password" placeholder="Your roll number, by default" required /></div>
-      <p class="hint">New here? Your temporary password is your roll number.</p>
+      <p class="hint">**New here?** Your temporary password is your Roll Number. After logging in, you can change your password from the **Profile** icon.
+</p>
       <button type="submit" class="grad-btn" style="width:100%;margin-top:0.5rem;">Log in</button>
     </form>
   `, {
