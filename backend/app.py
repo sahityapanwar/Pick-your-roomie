@@ -863,23 +863,7 @@ def api_profile():
 # Admin
 # --------------------------------------------------------------------------
 
-@app.route("/api/admin/student/<roll>", methods=["GET"])
-def api_admin_get_student(roll):
-    db = get_db()
 
-    row = db.execute(
-        "SELECT name, roll_number, password FROM students WHERE roll_number=?",
-        (roll,)
-    ).fetchone()
-
-    if not row:
-        return jsonify({"error": "Student not found"}), 404
-
-    return jsonify({
-        "name": row["name"],
-        "rollNumber": row["roll_number"],
-        "password": row["password"]
-    })
 
 @app.route("/api/admin/students", methods=["POST"])
 def api_admin_add_student():
