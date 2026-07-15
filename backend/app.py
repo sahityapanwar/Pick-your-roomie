@@ -22,10 +22,16 @@ import uuid
 from flask import Flask, g, jsonify, request, send_file
 from flask_cors import CORS
 
-from seed_data import REAL_STUDENTS
+from seed_data import REAL_STUDENTS, GSV_HOSTEL_CAPACITY
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "gsv_hostel.db")
 ADMIN_PASSWORD = os.environ.get("GSV_ADMIN_PASSWORD", "gsv-admin-2026")
+
+# GSV Campus Hostel has a fixed number of triple-sharing seats. Everyone else
+# is in Stanza Living. This is NOT re-checked against a hardcoded rank
+# anywhere — see sync_promotions() below, which always looks at who is
+# CURRENTLY on each side of this capacity line, not a fixed rank number.
+GSV_CAPACITY = GSV_HOSTEL_CAPACITY
 
 app = Flask(__name__)
 CORS(app)  # allow the static frontend (served from anywhere) to call this API
@@ -62,19 +68,24 @@ def init_db():
             cgpa REAL,
             password TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'looking',
-            group_id TEXT
+            group_id TEXT,
+            rank INTEGER,                   -- merit-list rank (lower = better)
+            hostel_type TEXT NOT NULL DEFAULT 'GSV',  -- 'GSV' | 'STANZA'
+            opted_out_of_gsv INTEGER NOT NULL DEFAULT 0  -- irreversible: excludes them from auto-promotion forever
         );
 
         CREATE TABLE IF NOT EXISTS groups_ (
             id TEXT PRIMARY KEY,
             type TEXT NOT NULL,
-            locked INTEGER NOT NULL DEFAULT 0
+            locked INTEGER NOT NULL DEFAULT 0,
+            hostel_type TEXT NOT NULL DEFAULT 'GSV'  -- 'GSV' | 'STANZA' — keeps the two hostels' groups fully separate
         );
 
         CREATE TABLE IF NOT EXISTS group_members (
             group_id TEXT NOT NULL REFERENCES groups_(id) ON DELETE CASCADE,
             roll_number TEXT NOT NULL REFERENCES students(roll_number) ON DELETE CASCADE,
-            seq INTEGER NOT NULL DEFAULT 0,  -- 0/1 = the original duo, 2 = the third roommate who joined later
+            seq INTEGER NOT NULL DEFAULT 0,  -- 0/1 = the original duo, 2 = the third roommate who joined later (GSV only)
+            lock_approved INTEGER NOT NULL DEFAULT 0,  -- Stanza-only: this member's independent lock consent
             PRIMARY KEY (group_id, roll_number)
         );
 
@@ -118,9 +129,9 @@ def init_db():
     if first_run:
         for s in REAL_STUDENTS:
             conn.execute(
-                "INSERT INTO students (roll_number, name, branch, cgpa, password, status, group_id) "
-                "VALUES (?, ?, ?, ?, ?, 'looking', NULL)",
-                (s["roll"], s["name"], s["branch"], s["cgpa"], s["roll"]),
+                "INSERT INTO students (roll_number, name, branch, cgpa, password, status, group_id, rank, hostel_type) "
+                "VALUES (?, ?, ?, ?, ?, 'looking', NULL, ?, ?)",
+                (s["roll"], s["name"], s["branch"], s["cgpa"], s["roll"], s["rank"], s["hostelType"]),
             )
         conn.commit()
 
@@ -141,6 +152,57 @@ def init_db():
             ).fetchall()
             for i, (rowid,) in enumerate(members):
                 conn.execute("UPDATE group_members SET seq = ? WHERE rowid = ?", (i, rowid))
+
+    # --- Migrations for DBs created before the two-hostel system existed ---
+    student_cols = [row[1] for row in conn.execute("PRAGMA table_info(students)")]
+    if "rank" not in student_cols or "hostel_type" not in student_cols:
+        if "rank" not in student_cols:
+            conn.execute("ALTER TABLE students ADD COLUMN rank INTEGER")
+        if "hostel_type" not in student_cols:
+            conn.execute("ALTER TABLE students ADD COLUMN hostel_type TEXT NOT NULL DEFAULT 'GSV'")
+        # Backfill rank/hostelType from the merit list for any student who
+        # already existed in an older DB (matched by roll number).
+        by_roll = {s["roll"]: s for s in REAL_STUDENTS}
+        for row in conn.execute("SELECT roll_number FROM students").fetchall():
+            info = by_roll.get(row[0])
+            if info:
+                conn.execute(
+                    "UPDATE students SET rank = ?, hostel_type = ? WHERE roll_number = ?",
+                    (info["rank"], info["hostelType"], row[0]),
+                )
+    # This DB may pre-date the two-hostel rollout entirely, in which case it
+    # only has the original 102 GSV students — the other ~158 (rank 103+,
+    # Stanza Living) were never inserted at all, and would fail to log in
+    # with "Invalid roll number". Insert any merit-list student who's simply
+    # missing from the table, regardless of whether the rank/hostel_type
+    # columns above already existed.
+    existing_rolls = {row[0] for row in conn.execute("SELECT roll_number FROM students").fetchall()}
+    for s in REAL_STUDENTS:
+        if s["roll"] not in existing_rolls:
+            conn.execute(
+                "INSERT INTO students (roll_number, name, branch, cgpa, password, status, group_id, rank, hostel_type) "
+                "VALUES (?, ?, ?, ?, ?, 'looking', NULL, ?, ?)",
+                (s["roll"], s["name"], s["branch"], s["cgpa"], s["roll"], s["rank"], s["hostelType"]),
+            )
+    group_cols2 = [row[1] for row in conn.execute("PRAGMA table_info(groups_)")]
+    if "hostel_type" not in group_cols2:
+        conn.execute("ALTER TABLE groups_ ADD COLUMN hostel_type TEXT NOT NULL DEFAULT 'GSV'")
+        # Backfill each existing group's hostel_type from its members.
+        for grow in conn.execute("SELECT id FROM groups_").fetchall():
+            member = conn.execute(
+                "SELECT s.hostel_type FROM group_members gm JOIN students s ON s.roll_number = gm.roll_number "
+                "WHERE gm.group_id = ? LIMIT 1",
+                (grow[0],),
+            ).fetchone()
+            if member:
+                conn.execute("UPDATE groups_ SET hostel_type = ? WHERE id = ?", (member[0], grow[0]))
+    member_cols2 = [row[1] for row in conn.execute("PRAGMA table_info(group_members)")]
+    if "lock_approved" not in member_cols2:
+        conn.execute("ALTER TABLE group_members ADD COLUMN lock_approved INTEGER NOT NULL DEFAULT 0")
+    student_cols2 = [row[1] for row in conn.execute("PRAGMA table_info(students)")]
+    if "opted_out_of_gsv" not in student_cols2:
+        conn.execute("ALTER TABLE students ADD COLUMN opted_out_of_gsv INTEGER NOT NULL DEFAULT 0")
+
     conn.commit()
     conn.close()
 
@@ -157,28 +219,42 @@ def student_row_to_dict(row):
         "cgpa": row["cgpa"],
         "status": row["status"],
         "groupId": row["group_id"],
+        "rank": row["rank"],
+        "hostelType": row["hostel_type"],
+        "optedOutOfGsv": bool(row["opted_out_of_gsv"]),
     }
 
 
-def get_all_students(db):
-    rows = db.execute("SELECT * FROM students ORDER BY name").fetchall()
+def get_all_students(db, hostel_type=None):
+    if hostel_type:
+        rows = db.execute(
+            "SELECT * FROM students WHERE hostel_type = ? ORDER BY name", (hostel_type,)
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM students ORDER BY name").fetchall()
     return [student_row_to_dict(r) for r in rows]
 
 
-def get_all_groups(db):
-    groups = db.execute("SELECT * FROM groups_").fetchall()
+def get_all_groups(db, hostel_type=None):
+    if hostel_type:
+        groups = db.execute("SELECT * FROM groups_ WHERE hostel_type = ?", (hostel_type,)).fetchall()
+    else:
+        groups = db.execute("SELECT * FROM groups_").fetchall()
     out = []
     for g_ in groups:
         # Ordered by seq so the frontend can treat memberIds[0:2] as the
         # founding duo and memberIds[2] as the third roommate who joined later.
         members = db.execute(
-            "SELECT roll_number FROM group_members WHERE group_id = ? ORDER BY seq, rowid", (g_["id"],)
+            "SELECT roll_number, lock_approved FROM group_members WHERE group_id = ? ORDER BY seq, rowid", (g_["id"],)
         ).fetchall()
         out.append({
             "id": g_["id"],
             "type": g_["type"],
+            "hostelType": g_["hostel_type"],
             "memberIds": [m["roll_number"] for m in members],
             "locked": bool(g_["locked"]),
+            # Stanza-only: which members have independently consented to lock.
+            "lockApprovals": {m["roll_number"]: bool(m["lock_approved"]) for m in members},
         })
     return out
 
@@ -190,8 +266,15 @@ def get_request_approvals(db, request_id):
     return {r["roll_number"]: r["decision"] for r in rows}
 
 
-def get_all_requests(db):
-    rows = db.execute("SELECT * FROM requests ORDER BY timestamp DESC").fetchall()
+def get_all_requests(db, hostel_type=None):
+    if hostel_type:
+        rows = db.execute(
+            "SELECT r.* FROM requests r JOIN students s ON s.roll_number = r.from_roll "
+            "WHERE s.hostel_type = ? ORDER BY r.timestamp DESC",
+            (hostel_type,),
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT * FROM requests ORDER BY timestamp DESC").fetchall()
     out = []
     for r in rows:
         out.append(
@@ -224,13 +307,91 @@ def add_notification(db, roll_number, message):
     )
 
 
-def full_state():
+def full_state(hostel_type=None):
     db = get_db()
     return {
-        "students": get_all_students(db),
-        "groups": get_all_groups(db),
-        "requests": get_all_requests(db),
+        "students": get_all_students(db, hostel_type),
+        "groups": get_all_groups(db, hostel_type),
+        "requests": get_all_requests(db, hostel_type),
     }
+
+
+# --------------------------------------------------------------------------
+# Waiting-list / promotion service
+# --------------------------------------------------------------------------
+# GSV Campus Hostel always holds exactly GSV_CAPACITY seats (currently 102).
+# Nothing here ever checks a hardcoded rank number — it always looks at who
+# is CURRENTLY assigned to GSV vs. STANZA, so it keeps working correctly no
+# matter how many students opt out, get removed, or get added later.
+
+def _dissolve_group_for_departing_member(db, roll, departing_note):
+    """Used when a student leaves a hostel entirely (promotion/opt-out) and
+    needs to be pulled out of whatever group they're currently in, notifying
+    whoever's left behind. Mirrors /api/leave's group-cleanup logic."""
+    student = db.execute("SELECT * FROM students WHERE roll_number = ?", (roll,)).fetchone()
+    if not student or not student["group_id"]:
+        return
+    group_id = student["group_id"]
+    members = [m["roll_number"] for m in db.execute(
+        "SELECT roll_number FROM group_members WHERE group_id = ?", (group_id,)
+    ).fetchall()]
+    db.execute("DELETE FROM group_members WHERE group_id = ? AND roll_number = ?", (group_id, roll))
+    remaining = [m for m in members if m != roll]
+    if len(remaining) <= 1:
+        db.execute("DELETE FROM groups_ WHERE id = ?", (group_id,))
+        db.execute("DELETE FROM group_members WHERE group_id = ?", (group_id,))
+        db.execute("DELETE FROM requests WHERE target_group_id = ?", (group_id,))
+        for m in remaining:
+            db.execute("UPDATE students SET status='looking', group_id=NULL WHERE roll_number=?", (m,))
+    else:
+        db.execute("UPDATE groups_ SET type='duo' WHERE id = ?", (group_id,))
+        for m in remaining:
+            db.execute("UPDATE students SET status='duo', group_id=? WHERE roll_number=?", (group_id, m))
+    for m in remaining:
+        add_notification(db, m, departing_note)
+
+
+def _promote_student_to_gsv(db, student_row):
+    """Move one waiting STANZA student into a freshly-opened GSV seat."""
+    roll = student_row["roll_number"]
+    if student_row["group_id"]:
+        # Rank-103-was-already-in-a-Stanza-duo edge case: break the duo,
+        # notify the remaining roommate, they go back to Looking.
+        _dissolve_group_for_departing_member(
+            db, roll,
+            "Your roommate has been promoted to GSV Campus Hostel. Your duo has been dissolved. "
+            "You are now searching for a roommate again.",
+        )
+    db.execute(
+        "UPDATE students SET hostel_type='GSV', status='looking', group_id=NULL WHERE roll_number=?",
+        (roll,),
+    )
+    add_notification(
+        db, roll,
+        "Congratulations! Based on the updated merit list you have been allotted GSV Campus Hostel. "
+        "You have been transferred automatically.",
+    )
+
+
+def sync_promotions(db):
+    """Call after anything that might shrink the GSV headcount (opt-out,
+    admin removing/moving a GSV student, etc). Fills any open GSV seats by
+    promoting the highest-ranked STANZA student(s), one at a time, for as
+    long as seats remain open and someone is waiting. Does not commit —
+    caller commits once, after this returns."""
+    while True:
+        gsv_count = db.execute(
+            "SELECT COUNT(*) AS c FROM students WHERE hostel_type = 'GSV'"
+        ).fetchone()["c"]
+        if gsv_count >= GSV_CAPACITY:
+            break
+        candidate = db.execute(
+            "SELECT * FROM students WHERE hostel_type = 'STANZA' AND opted_out_of_gsv = 0 "
+            "ORDER BY rank ASC LIMIT 1"
+        ).fetchone()
+        if not candidate:
+            break  # nobody left waiting
+        _promote_student_to_gsv(db, candidate)
 
 
 def err(message, code=400):
@@ -243,7 +404,19 @@ def err(message, code=400):
 
 @app.route("/api/state", methods=["GET"])
 def api_state():
-    return jsonify(full_state())
+    # Nothing is visible before login: every call must identify a real,
+    # currently-logged-in student, and only ever sees their OWN hostel's
+    # data (a GSV student never sees Stanza students/groups, and vice versa).
+    roll = (request.args.get("roll") or "").strip()
+    if not roll:
+        return err("Missing roll — you must be logged in to view this", 401)
+    db = get_db()
+    me = db.execute("SELECT * FROM students WHERE roll_number = ?", (roll,)).fetchone()
+    if not me:
+        return err("Invalid session — please log in again", 401)
+    state = full_state(hostel_type=me["hostel_type"])
+    state["me"] = student_row_to_dict(me)
+    return jsonify(state)
 
 
 # --------------------------------------------------------------------------
@@ -337,6 +510,8 @@ def api_invite():
     b = db.execute("SELECT * FROM students WHERE roll_number = ?", (to_roll,)).fetchone()
     if not a or not b:
         return err("Invalid student")
+    if a["hostel_type"] != b["hostel_type"]:
+        return err("You can only invite students from your own hostel")
     if a["status"] != "looking":
         return err("You're already in a group")
     if b["status"] != "looking":
@@ -373,6 +548,10 @@ def api_join_request():
     group = db.execute("SELECT * FROM groups_ WHERE id = ?", (group_id,)).fetchone()
     if not group:
         return err("That duo no longer exists")
+    if group["hostel_type"] != "GSV":
+        return err("Stanza rooms are double-sharing only — duos there can't grow into a trio")
+    if applicant["hostel_type"] != group["hostel_type"]:
+        return err("You can only request to join a duo in your own hostel")
     dup = db.execute(
         "SELECT 1 FROM requests WHERE type='join_duo' AND target_group_id=? AND from_roll=? AND status='pending'",
         (group_id, from_roll),
@@ -408,12 +587,16 @@ def api_trio_invite():
     group = db.execute("SELECT * FROM groups_ WHERE id = ?", (initiator["group_id"],)).fetchone()
     if not group or group["type"] != "duo":
         return err("Your group isn't an open duo")
+    if group["hostel_type"] != "GSV":
+        return err("Stanza rooms are double-sharing only — there's no third roommate to invite")
     if group["locked"]:
         return err("Your duo is locked")
     if target["status"] != "looking":
         return err("That student already has roommates")
     if target["roll_number"] == from_roll:
         return err("Invalid student")
+    if target["hostel_type"] != initiator["hostel_type"]:
+        return err("You can only invite students from your own hostel")
 
     members = [m["roll_number"] for m in db.execute(
         "SELECT roll_number FROM group_members WHERE group_id=? ORDER BY seq", (group["id"],)
@@ -481,7 +664,10 @@ def api_accept(req_id):
         if not a or not b or a["status"] != "looking" or b["status"] != "looking":
             return err("This invite is no longer valid")
         gid = f"duo-{uuid.uuid4()}"
-        db.execute("INSERT INTO groups_ (id, type, locked) VALUES (?, 'duo', 0)", (gid,))
+        db.execute(
+            "INSERT INTO groups_ (id, type, locked, hostel_type) VALUES (?, 'duo', 0, ?)",
+            (gid, a["hostel_type"]),
+        )
         for i, roll in enumerate((a["roll_number"], b["roll_number"])):
             db.execute("INSERT INTO group_members (group_id, roll_number, seq) VALUES (?, ?, ?)", (gid, roll, i))
             db.execute("UPDATE students SET status='duo', group_id=? WHERE roll_number=?", (gid, roll))
@@ -750,6 +936,8 @@ def api_leave():
     group_id = student["group_id"]
     group = db.execute("SELECT * FROM groups_ WHERE id = ?", (group_id,)).fetchone()
     if group and group["locked"]:
+        if group["hostel_type"] == "STANZA":
+            return err("This room partnership has been finalized and can no longer be changed.")
         return err("Your trio is locked. All three of you need to agree to unlock it first — see your trio card.")
     group_type = group["type"] if group else "duo"
     members = [m["roll_number"] for m in db.execute(
@@ -849,6 +1037,94 @@ def api_request_unlock(group_id):
     return jsonify({"ok": True, "requestId": rid})
 
 
+@app.route("/api/stanza/groups/<group_id>/lock", methods=["POST"])
+def api_stanza_lock_duo(group_id):
+    """Stanza duos lock via MUTUAL, INDEPENDENT consent: each member presses
+    Lock separately, and only once BOTH have (member1Locked AND
+    member2Locked) does the group actually become locked. Unlike GSV, this
+    lock is permanent — Stanza has no unlock flow, matching the spec that a
+    locked Stanza duo can never be changed again."""
+    data = request.get_json(force=True) or {}
+    acting_roll = data.get("actingRoll")
+    db = get_db()
+    group = db.execute("SELECT * FROM groups_ WHERE id = ?", (group_id,)).fetchone()
+    if not group:
+        return err("Group not found", 404)
+    if group["hostel_type"] != "STANZA" or group["type"] != "duo":
+        return err("Locking this way is only for Stanza duos")
+    if group["locked"]:
+        return err("This duo is already locked")
+    member_row = db.execute(
+        "SELECT * FROM group_members WHERE group_id = ? AND roll_number = ?", (group_id, acting_roll)
+    ).fetchone()
+    if not member_row:
+        return err("You're not in this duo", 403)
+    if member_row["lock_approved"]:
+        return err("You've already agreed to lock this duo")
+    db.execute(
+        "UPDATE group_members SET lock_approved = 1 WHERE group_id = ? AND roll_number = ?",
+        (group_id, acting_roll),
+    )
+    approvals = db.execute(
+        "SELECT roll_number, lock_approved FROM group_members WHERE group_id = ?", (group_id,)
+    ).fetchall()
+    actor = db.execute("SELECT * FROM students WHERE roll_number=?", (acting_roll,)).fetchone()
+    all_members = [a["roll_number"] for a in approvals]
+    if all(a["lock_approved"] for a in approvals):
+        db.execute("UPDATE groups_ SET locked = 1 WHERE id = ?", (group_id,))
+        for m in all_members:
+            add_notification(
+                db, m,
+                "You both agreed — your room partnership is now locked and finalized. "
+                "This room partnership has been finalized and can no longer be changed.",
+            )
+        db.commit()
+        return jsonify({"ok": True, "locked": True})
+    for m in all_members:
+        if m != acting_roll:
+            add_notification(db, m, f"{actor['name']} agreed to lock your duo. Lock it too to finalize your room.")
+    db.commit()
+    return jsonify({"ok": True, "locked": False, "waiting": True})
+
+
+@app.route("/api/opt-out", methods=["POST"])
+def api_opt_out():
+    """A GSV student permanently gives up their seat and moves to Stanza.
+    This is irreversible from the student's side (no "opt back in"). Their
+    vacated seat is immediately backfilled by promoting the highest-ranked
+    waiting Stanza student — see sync_promotions()."""
+    data = request.get_json(force=True) or {}
+    roll = (data.get("rollNumber") or "").strip()
+    db = get_db()
+    student = db.execute("SELECT * FROM students WHERE roll_number = ?", (roll,)).fetchone()
+    if not student:
+        return err("Invalid student", 404)
+    if student["hostel_type"] != "GSV":
+        return err("You're not a GSV Campus Hostel student")
+    if student["group_id"]:
+        group = db.execute("SELECT * FROM groups_ WHERE id = ?", (student["group_id"],)).fetchone()
+        if group and group["locked"]:
+            return err("Your trio is locked. All three of you must agree to unlock it before you can opt out.")
+        _dissolve_group_for_departing_member(
+            db, roll,
+            f"{student['name']} opted out of GSV Campus Hostel and left your group. "
+            f"You are now searching for a roommate again.",
+        )
+    db.execute(
+        "UPDATE students SET hostel_type='STANZA', status='looking', group_id=NULL, opted_out_of_gsv=1 "
+        "WHERE roll_number=?",
+        (roll,),
+    )
+    add_notification(
+        db, roll,
+        "You have exited GSV Campus Hostel and moved to Stanza Living Hostel. "
+        "You can now form a double-sharing room there.",
+    )
+    sync_promotions(db)  # immediately backfill the seat that just opened up
+    db.commit()
+    return jsonify({"ok": True, "hostelType": "STANZA"})
+
+
 @app.route("/api/profile", methods=["POST"])
 def api_profile():
     data = request.get_json(force=True)
@@ -863,20 +1139,27 @@ def api_profile():
 # Admin
 # --------------------------------------------------------------------------
 
-
-
 @app.route("/api/admin/students", methods=["POST"])
 def api_admin_add_student():
     data = request.get_json(force=True)
     roll, name, branch = data.get("rollNumber"), data.get("name"), data.get("branch")
+    hostel_type = data.get("hostelType") or "STANZA"
+    if hostel_type not in ("GSV", "STANZA"):
+        return err("hostelType must be GSV or STANZA")
     db = get_db()
     if db.execute("SELECT 1 FROM students WHERE roll_number=?", (roll,)).fetchone():
         return err("Duplicate roll number")
+    rank = data.get("rank")
+    if rank is None:
+        # Put them at the back of the Stanza waiting list by default.
+        worst = db.execute("SELECT MAX(rank) AS m FROM students").fetchone()
+        rank = (worst["m"] or 0) + 1
     db.execute(
-        "INSERT INTO students (roll_number, name, branch, cgpa, password, status, group_id) "
-        "VALUES (?, ?, ?, NULL, ?, 'looking', NULL)",
-        (roll, name, branch, roll),
+        "INSERT INTO students (roll_number, name, branch, cgpa, password, status, group_id, rank, hostel_type) "
+        "VALUES (?, ?, ?, NULL, ?, 'looking', NULL, ?, ?)",
+        (roll, name, branch, roll, rank, hostel_type),
     )
+    sync_promotions(db)  # in case adding a GSV-ranked student pushed someone out, or a seat is still open
     db.commit()
     return jsonify({"ok": True})
 
@@ -886,13 +1169,26 @@ def api_admin_edit_student(roll):
     data = request.get_json(force=True)
     db = get_db()
     fields, params = [], []
-    for key, col in (("name", "name"), ("branch", "branch")):
+    for key, col in (("name", "name"), ("branch", "branch"), ("rank", "rank")):
         if key in data:
             fields.append(f"{col} = ?")
             params.append(data[key])
+    hostel_changed = "hostelType" in data
+    if hostel_changed:
+        if data["hostelType"] not in ("GSV", "STANZA"):
+            return err("hostelType must be GSV or STANZA")
+        fields.append("hostel_type = ?")
+        params.append(data["hostelType"])
+        if data["hostelType"] == "GSV":
+            fields.append("opted_out_of_gsv = 0")
     if fields:
         params.append(roll)
         db.execute(f"UPDATE students SET {', '.join(fields)} WHERE roll_number = ?", params)
+        if hostel_changed:
+            # Manually moving a student in/out of GSV can open or close a
+            # seat — re-run the waiting-list promotion logic either way.
+            db.execute("UPDATE students SET status='looking', group_id=NULL WHERE roll_number=?", (roll,))
+            sync_promotions(db)
         db.commit()
     return jsonify({"ok": True})
 
@@ -903,6 +1199,7 @@ def api_admin_remove_student(roll):
     student = db.execute("SELECT * FROM students WHERE roll_number=?", (roll,)).fetchone()
     if not student:
         return err("Not found", 404)
+    was_gsv = student["hostel_type"] == "GSV"
     if student["group_id"]:
         group_id = student["group_id"]
         members = [m["roll_number"] for m in db.execute(
@@ -920,6 +1217,8 @@ def api_admin_remove_student(roll):
             db.execute("UPDATE groups_ SET type='duo' WHERE id=?", (group_id,))
     db.execute("DELETE FROM requests WHERE from_roll=? OR to_roll=?", (roll, roll))
     db.execute("DELETE FROM students WHERE roll_number=?", (roll,))
+    if was_gsv:
+        sync_promotions(db)  # removing a GSV student opens a seat — backfill it
     db.commit()
     return jsonify({"ok": True})
 
@@ -953,11 +1252,46 @@ def api_admin_export():
     rows = get_all_students(db)
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["Name", "Roll", "Branch", "CGPA", "Status"])
+    writer.writerow(["Name", "Roll", "Branch", "CGPA", "Rank", "Hostel", "Status"])
     for r in rows:
-        writer.writerow([r["name"], r["rollNumber"], r["branch"], r["cgpa"], r["status"]])
+        writer.writerow([r["name"], r["rollNumber"], r["branch"], r["cgpa"], r["rank"], r["hostelType"], r["status"]])
     mem = io.BytesIO(buf.getvalue().encode("utf-8"))
     return send_file(mem, mimetype="text/csv", as_attachment=True, download_name="gsv-hostel-students.csv")
+
+
+@app.route("/api/admin/state", methods=["GET"])
+def api_admin_state():
+    """Full, cross-hostel view for the admin dashboard only (gated by the
+    admin password on the frontend's admin-login screen) — includes both
+    hostels' students/groups/requests plus capacity + waiting-list figures."""
+    db = get_db()
+    state = full_state()  # no hostel filter — admin sees everything
+    gsv_count = db.execute("SELECT COUNT(*) c FROM students WHERE hostel_type='GSV'").fetchone()["c"]
+    stanza_count = db.execute("SELECT COUNT(*) c FROM students WHERE hostel_type='STANZA'").fetchone()["c"]
+    waiting = db.execute(
+        "SELECT roll_number, name, branch, rank FROM students "
+        "WHERE hostel_type='STANZA' AND opted_out_of_gsv = 0 ORDER BY rank ASC"
+    ).fetchall()
+    gsv_trios = db.execute("SELECT COUNT(*) c FROM groups_ WHERE hostel_type='GSV' AND type='trio'").fetchone()["c"]
+    stanza_duos = db.execute("SELECT COUNT(*) c FROM groups_ WHERE hostel_type='STANZA' AND type='duo'").fetchone()["c"]
+    pending = db.execute(
+        "SELECT COUNT(*) c FROM requests WHERE status IN ('pending', 'pending_partner', 'pending_target')"
+    ).fetchone()["c"]
+    state["capacity"] = {
+        "gsvCapacity": GSV_CAPACITY,
+        "gsvOccupied": gsv_count,
+        "gsvAvailable": max(GSV_CAPACITY - gsv_count, 0),
+        "stanzaTotal": stanza_count,
+        "waitingList": [
+            {"rank": w["rank"], "rollNumber": w["roll_number"], "name": w["name"], "branch": w["branch"]}
+            for w in waiting
+        ],
+        "gsvTrios": gsv_trios,
+        "stanzaDuos": stanza_duos,
+        "pendingRequests": pending,
+        "totalStudents": gsv_count + stanza_count,
+    }
+    return jsonify(state)
 
 
 if __name__ == "__main__":
