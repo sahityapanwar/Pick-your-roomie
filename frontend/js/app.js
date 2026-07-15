@@ -16,13 +16,16 @@ const STATUS_META = {
 
 const FAQS = [
   { q: "Does the hostel office or warden assign our room?", a: "No. There's no hostel office or warden involvement in matching roommates or assigning rooms. You and your two roommates form your trio yourselves on this page, then on move-in day you simply walk into the hostel and pick your favorite available room — strictly first-come, first-served." },
-  { q: "What happens if I can't find two roommates in time?", a: "There's no fallback matching by the hostel office — it's entirely on you. If you haven't formed a trio by 1 August, you'll still need to walk into the hostel and sort out a room and roommates from whatever's left, in person, first-come first-served. Forming your trio early is strongly in your own interest." },
-  { q: "Can a duo invite a third roommate directly, instead of only waiting for requests?", a: "Yes. Either member of a duo can tap Invite on any looking student's card. It doesn't go out right away — it first goes to the other duo member for approval. Only once your roommate approves does the invited student actually see it and get to accept or reject it." },
-  { q: "Who can request to join our duo?", a: "Any student still in 'Looking' status can send a request. Both members of the duo need to accept it from their Requests inbox before the trio is formed — either one rejecting cancels the request." },
-  { q: "What does locking a trio mean, and who can do it?", a: "Locking finalizes your room lineup for allotment day. Only the original two roommates — the ones who formed the duo first — can lock a trio; the third roommate who joined later can't. Once locked, unlocking (or leaving) requires all three roommates to agree." },
-  { q: "Can I leave a duo or trio after joining?", a: "Yes, from your profile — unless your trio is locked. A locked trio needs all three members to agree to unlock it before anyone can leave." },
+  { q: "What's the difference between GSV Campus Hostel and Stanza Living?", a: "GSV Campus Hostel is triple-sharing and reserved for the top 102 students on the merit list; everyone ranked 103rd or lower starts in Stanza Living, which is double-sharing. You're placed automatically based on your rank — you never choose a hostel yourself, and you'll only ever see students from your own hostel here." },
+  { q: "What happens if I can't find roommates in time?", a: "There's no fallback matching by the hostel office — it's entirely on you. If you haven't formed a group by 1 August, you'll still need to walk into the hostel and sort out a room from whatever's left, in person, first-come first-served. Forming your group early is strongly in your own interest." },
+  { q: "Can a GSV duo invite a third roommate directly, instead of only waiting for requests?", a: "Yes. Either member of a duo can tap Invite on any looking student's card. It doesn't go out right away — it first goes to the other duo member for approval. Only once your roommate approves does the invited student actually see it and get to accept or reject it." },
+  { q: "Who can request to join our duo?", a: "Any student still in 'Looking' status, from your own hostel, can send a request. In GSV, both members of the duo need to accept it before the trio is formed. Stanza duos are double-sharing only, so they don't take a third member." },
+  { q: "What does locking mean, and who can do it?", a: "Locking finalizes your room lineup. In GSV, only the original two roommates who formed the duo first can lock a trio — the third roommate who joined later can't — and unlocking afterward needs all three to agree. In Stanza, both members of a duo lock independently; once BOTH have locked, the duo is permanent and can never be changed." },
+  { q: "Can I leave a group after joining?", a: "Yes, from your profile — unless it's locked. A locked GSV trio needs all three members to agree to unlock it before anyone can leave; a locked Stanza duo can never be left or changed at all, by design." },
+  { q: "I'm in GSV — can I give up my seat?", a: "Yes, from your profile you can Opt Out of GSV Hostel. This is permanent and immediate: you move to Stanza Living right away, and your vacated seat is automatically filled by the highest-ranked student currently waiting." },
+  { q: "How does the GSV waiting list work?", a: "Every Stanza student is ranked in a queue. The moment a GSV seat opens up — from an opt-out or otherwise — the single highest-ranked waiting student is promoted into GSV automatically, no approval needed. If that student was already in a locked Stanza duo, it's dissolved and their former roommate goes back to 'Looking'." },
   { q: "Is my roll number really my password?", a: "For this pilot, yes — your roll number is your temporary password. You can log in and change your password, by clicking on the profile icon." },
-  { q: "Is this data visible to other students?", a: "Yes. The directory, duos, trios and statistics are shared with every student using this page, since the whole point is coordinating who lives with whom." },
+  { q: "Is this data visible to other students?", a: "Only within your own hostel. GSV students never see Stanza students (or vice versa) — the directory, duos, trios and statistics you see are always scoped to your own hostel." },
 ];
 
 /* ------------------------------ state ------------------------------ */
@@ -36,8 +39,11 @@ const state = {
   requests: [],
   notifications: [],
   search: "",
+  stanzaSearch: "",
   filter: "all",
-  view: "home",
+  view: "home",      // "gate" | "home" (GSV portal) | "stanza" | "admin"
+  capacity: null,    // admin-only: capacity + waiting list info
+  adminData: null,   // admin-only: full cross-hostel students/groups/requests
 };
 
 /* ------------------------------ helpers ----------------------------- */
@@ -101,12 +107,21 @@ async function api(path, opts = {}) {
 }
 
 async function refreshState() {
-  const data = await api("/api/state");
+  if (!state.session) { state.students = []; state.groups = []; state.requests = []; return; }
+  const data = await api(`/api/state?roll=${encodeURIComponent(state.session.rollNumber)}`);
   state.students = data.students;
   state.groups = data.groups;
   state.requests = data.requests;
   await refreshNotifications();
   renderAll();
+}
+
+async function refreshAdminState() {
+  // Full cross-hostel view (GSV + Stanza), plus capacity/waiting-list
+  // figures — admin only, gated by the admin password screen.
+  const data = await api("/api/admin/state");
+  state.adminData = data;
+  state.capacity = data.capacity;
 }
 
 async function refreshNotifications() {
@@ -148,12 +163,20 @@ function closeModal() {
 
 function renderAll() {
   renderNavbar();
-  renderStats();
-  renderDirectory();
-  renderDuos();
-  renderTrios();
-  renderFAQ();
   applyTheme();
+  if (state.view === "home") {
+    renderStats();
+    renderDirectory();
+    renderDuos();
+    renderTrios();
+    renderFAQ();
+  } else if (state.view === "stanza") {
+    renderStanzaStats();
+    renderStanzaLooking();
+    renderStanzaDuos();
+  } else if (state.view === "admin") {
+    renderAdmin();
+  }
 }
 
 function applyTheme() {
@@ -210,8 +233,13 @@ function renderNavbar() {
   const bellCount = document.getElementById("bell-count");
   const userChip = document.getElementById("user-chip");
   const loginBtn = document.getElementById("btn-login");
+  const navGSV = document.getElementById("nav-links");
+  const navStanza = document.getElementById("nav-links-stanza");
 
-  if (state.session) {
+  navGSV.classList.toggle("hidden", state.view !== "home");
+  navStanza.classList.toggle("hidden", state.view !== "stanza");
+
+  if (state.session && state.view !== "gate") {
     bell.classList.remove("hidden");
     const badgeCount = actionableRequestsForMe().length + state.notifications.filter((n) => !n.isRead).length;
     if (badgeCount > 0) {
@@ -393,6 +421,109 @@ function renderTrios() {
   }).join("");
 }
 
+/* ------------------------------ Stanza Living portal ------------------------------ */
+// state.students/groups/requests are ALREADY scoped to the logged-in
+// student's own hostel by the backend (see /api/state?roll=...), so no
+// extra hostel filtering is needed here — a Stanza student's state simply
+// never contains any GSV data at all.
+
+function renderStanzaStats() {
+  const total = state.students.length;
+  const looking = state.students.filter((s) => s.status === "looking").length;
+  const duos = state.groups.filter((g) => g.type === "duo").length;
+  const locked = state.groups.filter((g) => g.type === "duo" && g.locked).length;
+  const cards = [
+    { label: "Total Stanza Students", value: total, icon: "👥" },
+    { label: "Students Looking", value: looking, icon: "🔎" },
+    { label: "Duos Formed", value: duos, icon: "🤝" },
+    { label: "Duos Locked", value: locked, icon: "🔒" },
+  ];
+  document.getElementById("stanza-stats-grid").innerHTML = cards.map((c) => `
+    <div class="card stat-card">
+      <div class="stat-icon">${c.icon}</div>
+      <div class="stat-value">${c.value}</div>
+      <div class="stat-label">${c.label}</div>
+    </div>`).join("");
+}
+
+function renderStanzaLooking() {
+  const term = state.stanzaSearch.trim().toLowerCase();
+  const list = state.students
+    .filter((s) => s.status === "looking")
+    .filter((s) => !term || s.name.toLowerCase().includes(term) || s.rollNumber.toLowerCase().includes(term))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const grid = document.getElementById("stanza-looking-grid");
+  if (list.length === 0) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">No one is looking for a roommate right now.</div>`;
+  } else {
+    grid.innerHTML = list.map(studentCardHTML).join("");
+  }
+  document.querySelectorAll("#stanza-looking-grid .invite-btn").forEach((btn) => {
+    btn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); showInviteModal(btn.dataset.invite); };
+  });
+}
+
+function renderStanzaDuos() {
+  const duos = state.groups.filter((g) => g.type === "duo");
+  const grid = document.getElementById("stanza-duos-grid");
+  if (duos.length === 0) {
+    grid.innerHTML = `<div class="card" style="grid-column:1/-1"><div class="empty-state">No completed duos yet.</div></div>`;
+    return;
+  }
+  const me = currentStudent();
+  grid.innerHTML = duos.map((g) => {
+    const members = g.memberIds.map(studentByRoll).filter(Boolean);
+    const isMember = me && g.memberIds.includes(me.rollNumber);
+    const myApproved = !!(g.lockApprovals && g.lockApprovals[me?.rollNumber]);
+    let actionHTML;
+    if (g.locked) {
+      actionHTML = `<div class="hint" style="margin-top:0.6rem">This room partnership has been finalized and can no longer be changed.</div>`;
+    } else if (isMember && myApproved) {
+      actionHTML = `<div class="hint" style="margin-top:0.6rem">✓ You agreed to lock — waiting for your roommate.</div>`;
+    } else if (isMember) {
+      actionHTML = `<button class="grad-btn" style="width:100%;margin-top:0.7rem;" data-stanza-lock="${g.id}">🔒 Lock Duo</button>`;
+    }
+    return `
+      <div class="card duo-card">
+        <div class="duo-members">
+          ${members.map((m, i) => `
+            <button class="member-mini" data-open-profile="${m.rollNumber}">
+              ${avatarHTML(m.name, "md")}
+              <div><div class="student-name">${escapeHTML(m.name)}</div><div class="student-roll mono">${m.rollNumber}</div></div>
+            </button>
+            ${i === 0 ? '<span class="dots-link">┄┄</span>' : ""}
+          `).join("")}
+        </div>
+        <div class="trio-done">${g.locked ? "🔒 Locked/Finalized" : "🟡 Unlocked"}</div>
+        ${actionHTML || ""}
+      </div>`;
+  }).join("");
+}
+
+function showStanzaLockConfirmModal(groupId) {
+  openModal(`
+    <h3>Lock this duo?</h3>
+    <p class="hint" style="margin:0.5rem 0 1.25rem">Your roommate also needs to lock it independently. Once you BOTH have, this room partnership is finalized and can never be changed — no leaving, no new invitations.</p>
+    <div class="modal-actions">
+      <button class="outline-btn" id="btn-cancel">Cancel</button>
+      <button class="grad-btn" id="btn-confirm">🔒 Lock My Side</button>
+    </div>
+  `, {
+    onMount: (box) => {
+      box.querySelector("#btn-cancel").onclick = closeModal;
+      box.querySelector("#btn-confirm").onclick = async () => {
+        const me = currentStudent();
+        try {
+          const res = await api(`/api/stanza/groups/${groupId}/lock`, { method: "POST", body: JSON.stringify({ actingRoll: me.rollNumber }) });
+          toast(res.locked ? "🔒 Both of you agreed — duo locked and finalized!" : "✓ Recorded — waiting for your roommate to lock too");
+          closeModal();
+          await refreshState();
+        } catch (err) { toast("❌ " + err.message); }
+      };
+    },
+  });
+}
+
 function renderFAQ() {
   document.getElementById("faq-list").innerHTML = FAQS.map((f, i) => `
     <div class="faq-item ${i === 0 ? "open" : ""}" data-faq="${i}">
@@ -409,8 +540,7 @@ function showLoginModal() {
     <form id="login-form">
       <div class="field"><label>Roll Number</label><input id="login-roll" class="mono" placeholder="25AI1034" required /></div>
       <div class="field"><label>Password</label><input id="login-pass" type="password" placeholder="Your roll number, by default" required /></div>
-      <p class="hint">New here?Your temporary password is your Roll Number. After logging in, you can change your password from the Profile icon.
-</p>
+      <p class="hint">New here? Your temporary password is your roll number.</p>
       <button type="submit" class="grad-btn" style="width:100%;margin-top:0.5rem;">Log in</button>
     </form>
   `, {
@@ -427,6 +557,7 @@ function showLoginModal() {
           toast(`✅ Welcome back, ${data.student.name.split(" ")[0]}`);
           closeModal();
           await refreshState();
+          enterPortal(); // auto-routes to GSV or Stanza based on data.student.hostelType
         } catch (err) {
           toast("❌ " + err.message);
         }
@@ -443,6 +574,18 @@ function showProfileModal(roll) {
   const group = s.groupId ? state.groups.find((g) => g.id === s.groupId) : null;
   const groupMembers = group ? group.memberIds.filter((r) => r !== s.rollNumber).map(studentByRoll).filter(Boolean) : [];
   const isLocked = !!(group && group.locked);
+  const hostelLabel = s.hostelType === "GSV" ? "GSV Campus Hostel" : "Stanza Living Hostel";
+
+  let leaveSectionHTML = "";
+  if (isOwn && s.status !== "looking") {
+    if (isLocked && s.hostelType === "STANZA") {
+      leaveSectionHTML = `<div class="hint" style="margin-top:0.6rem">This room partnership has been finalized and can no longer be changed.</div>`;
+    } else if (isLocked) {
+      leaveSectionHTML = `<div class="hint" style="margin-top:0.6rem">🔒 Your trio is locked. All three of you must agree to unlock it before anyone can leave.</div>`;
+    } else {
+      leaveSectionHTML = `<button class="link-btn" style="width:100%;margin-top:0.4rem;color:var(--danger)" id="btn-leave">Leave ${s.status === "trio" ? "Trio" : "Duo"}</button>`;
+    }
+  }
 
   openModal(`
     <div class="modal-head"><h3>Profile</h3><button class="modal-close" data-close>✕</button></div>
@@ -450,7 +593,11 @@ function showProfileModal(roll) {
       ${avatarHTML(s.name, "lg")}
       <div><div class="student-name" style="font-size:1.05rem">${escapeHTML(s.name)}</div><div class="student-roll mono">${s.rollNumber} · ${s.branch}</div></div>
     </div>
-    <div style="margin-top:0.9rem"><span class="status-badge ${STATUS_META[s.status].cls}">${STATUS_META[s.status].dot} ${STATUS_META[s.status].label}</span>${isLocked ? ` <span class="status-badge">🔒 Locked</span>` : ""}</div>
+    <div style="margin-top:0.9rem;display:flex;gap:0.4rem;flex-wrap:wrap">
+      <span class="status-badge ${STATUS_META[s.status].cls}">${STATUS_META[s.status].dot} ${STATUS_META[s.status].label}</span>
+      ${isLocked ? ` <span class="status-badge">🔒 Locked</span>` : ""}
+      <span class="status-badge">🏨 ${hostelLabel}${s.rank ? ` · Rank ${s.rank}` : ""}</span>
+    </div>
     ${groupMembers.length ? `
       <div style="margin-top:1rem">
         <div class="hint" style="margin-bottom:0.5rem">${s.status === "trio" ? "Roommates" : "Roommate"}</div>
@@ -465,11 +612,8 @@ function showProfileModal(roll) {
       ${isOwn ? `<button class="grad-btn" id="btn-edit-profile">✏️ Edit</button>` : `<button class="grad-btn" id="btn-login-as">Log in as you?</button>`}
     </div>
     ${isOwn ? `<button class="link-btn" style="width:100%;margin-top:0.6rem;" id="btn-change-password">🔒 Change Password</button>` : ""}
-    ${isOwn && s.status !== "looking" ? (
-      isLocked
-        ? `<div class="hint" style="margin-top:0.6rem">🔒 Your trio is locked. All three of you must agree to unlock it before anyone can leave.</div>`
-        : `<button class="link-btn" style="width:100%;margin-top:0.4rem;color:var(--danger)" id="btn-leave">Leave ${s.status === "trio" ? "Trio" : "Duo"}</button>`
-    ) : ""}
+    ${leaveSectionHTML}
+    ${isOwn && s.hostelType === "GSV" ? `<button class="link-btn" style="width:100%;margin-top:0.4rem;color:var(--danger)" id="btn-opt-out" data-opt-out>Opt Out of GSV Hostel</button>` : ""}
   `, {
     onMount: (box) => {
       box.querySelector("[data-close]").onclick = closeModal;
@@ -483,6 +627,7 @@ function showProfileModal(roll) {
         box.querySelector("#btn-change-password").onclick = () => showChangePasswordModal(s);
         const leaveBtn = box.querySelector("#btn-leave");
         if (leaveBtn) leaveBtn.onclick = () => showConfirmLeaveModal(s);
+        // #btn-opt-out is handled by the delegated [data-opt-out] click handler
       } else {
         box.querySelector("#btn-login-as").onclick = () => { closeModal(); showLoginModal(); };
       }
@@ -543,6 +688,31 @@ function showProfileEditModal(s) {
           toast("✅ Profile updated");
           closeModal();
           await refreshState();
+        } catch (err) { toast("❌ " + err.message); }
+      };
+    },
+  });
+}
+
+function showOptOutConfirmModal() {
+  openModal(`
+    <h3>Exit GSV Hostel?</h3>
+    <p class="hint" style="margin:0.5rem 0 1.25rem">You are about to permanently give up your GSV Campus Hostel seat. You will immediately be transferred to Stanza Living Hostel. Your decision cannot be undone automatically. Do you wish to continue?</p>
+    <div class="modal-actions">
+      <button class="outline-btn" id="btn-cancel">Cancel</button>
+      <button class="grad-btn" id="btn-confirm" style="background:var(--danger)">Yes, Exit GSV</button>
+    </div>
+  `, {
+    onMount: (box) => {
+      box.querySelector("#btn-cancel").onclick = closeModal;
+      box.querySelector("#btn-confirm").onclick = async () => {
+        const me = currentStudent();
+        try {
+          await api("/api/opt-out", { method: "POST", body: JSON.stringify({ rollNumber: me.rollNumber }) });
+          toast("You've exited GSV Campus Hostel and moved to Stanza Living.");
+          closeModal();
+          await refreshState();
+          enterPortal(); // now routes to the Stanza portal automatically
         } catch (err) { toast("❌ " + err.message); }
       };
     },
@@ -856,6 +1026,7 @@ function showAdminLoginGate() {
       await api("/api/admin/login", { method: "POST", body: JSON.stringify({ password: pass }) });
       state.adminAuthed = true;
       sessionStorage.setItem("gsv_admin_authed", "1");
+      await refreshAdminState();
       renderAdmin();
     } catch (err) { toast("❌ " + err.message); }
   };
@@ -866,16 +1037,42 @@ let adminTab = "students";
 function renderAdmin() {
   const container = document.getElementById("main-admin");
   if (!state.adminAuthed) { showAdminLoginGate(); return; }
+  if (!state.adminData) {
+    container.innerHTML = `<div class="hero"><p class="muted">Loading admin dashboard…</p></div>`;
+    refreshAdminState().then(renderAdmin).catch((err) => toast("❌ " + err.message));
+    return;
+  }
+
+  const cap = state.capacity;
+  const cards = [
+    { label: "Total Students", value: cap.totalStudents, icon: "👥" },
+    { label: "Total GSV", value: cap.gsvOccupied, icon: "🏨" },
+    { label: "Total Stanza", value: cap.stanzaTotal, icon: "🏢" },
+    { label: "Available GSV Seats", value: cap.gsvAvailable, icon: "🟢" },
+    { label: "Students Waiting", value: cap.waitingList.length, icon: "⏳" },
+    { label: "GSV Trios", value: cap.gsvTrios, icon: "✅" },
+    { label: "Stanza Duos", value: cap.stanzaDuos, icon: "🤝" },
+    { label: "Pending Requests", value: cap.pendingRequests, icon: "📨" },
+  ];
 
   container.innerHTML = `
     <div class="admin-header">
       <h2>Admin Dashboard</h2>
       <button class="outline-btn small" id="admin-back">← Back to site</button>
     </div>
+    <div class="stats-grid" style="margin-bottom:1.25rem">
+      ${cards.map((c) => `
+        <div class="card stat-card">
+          <div class="stat-icon">${c.icon}</div>
+          <div class="stat-value">${c.value}</div>
+          <div class="stat-label">${c.label}</div>
+        </div>`).join("")}
+    </div>
     <div class="admin-tabs">
-      <button class="admin-tab ${adminTab === "students" ? "active" : ""}" data-tab="students">Students (${state.students.length})</button>
-      <button class="admin-tab ${adminTab === "groups" ? "active" : ""}" data-tab="groups">Groups (${state.groups.length})</button>
-      <button class="admin-tab ${adminTab === "requests" ? "active" : ""}" data-tab="requests">Requests (${state.requests.length})</button>
+      <button class="admin-tab ${adminTab === "students" ? "active" : ""}" data-tab="students">Students (${state.adminData.students.length})</button>
+      <button class="admin-tab ${adminTab === "groups" ? "active" : ""}" data-tab="groups">Groups (${state.adminData.groups.length})</button>
+      <button class="admin-tab ${adminTab === "requests" ? "active" : ""}" data-tab="requests">Requests (${state.adminData.requests.length})</button>
+      <button class="admin-tab ${adminTab === "waiting" ? "active" : ""}" data-tab="waiting">Waiting List (${cap.waitingList.length})</button>
     </div>
     <div class="admin-panel" id="admin-panel-body"></div>
   `;
@@ -885,7 +1082,32 @@ function renderAdmin() {
   const body = document.getElementById("admin-panel-body");
   if (adminTab === "students") renderAdminStudents(body);
   else if (adminTab === "groups") renderAdminGroups(body);
+  else if (adminTab === "waiting") renderAdminWaitingList(body);
   else renderAdminRequests(body);
+}
+
+function renderAdminWaitingList(body) {
+  const waiting = state.capacity.waitingList;
+  if (waiting.length === 0) {
+    body.innerHTML = `<div class="empty-state">No one is waiting — GSV is either full with no queue, or every seat is filled.</div>`;
+    return;
+  }
+  body.innerHTML = `
+    <table class="admin-table">
+      <thead><tr><th>Queue #</th><th>Rank</th><th>Name</th><th>Roll</th><th>Branch</th></tr></thead>
+      <tbody>
+        ${waiting.map((w, i) => `
+          <tr>
+            <td>${i + 1}</td>
+            <td class="mono">${w.rank}</td>
+            <td>${escapeHTML(w.name)}</td>
+            <td class="mono">${w.rollNumber}</td>
+            <td>${w.branch}</td>
+          </tr>`).join("")}
+      </tbody>
+    </table>
+    <p class="hint" style="margin-top:0.75rem">Whenever a GSV seat opens (opt-out, removal, etc.), rank #1 on this list is promoted automatically.</p>
+  `;
 }
 
 function renderAdminStudents(body) {
@@ -895,14 +1117,16 @@ function renderAdminStudents(body) {
       <a class="outline-btn small" href="${API_BASE}/api/admin/export.csv" style="text-decoration:none">⬇ Export CSV</a>
     </div>
     <table class="admin-table">
-      <thead><tr><th>Name</th><th>Roll</th><th>Branch</th><th>CGPA</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Roll</th><th>Branch</th><th>CGPA</th><th>Rank</th><th>Hostel</th><th>Status</th><th></th></tr></thead>
       <tbody>
-        ${state.students.map((s) => `
+        ${state.adminData.students.map((s) => `
           <tr>
             <td>${escapeHTML(s.name)}</td>
             <td class="mono">${s.rollNumber}</td>
             <td>${s.branch}</td>
             <td>${s.cgpa ?? "-"}</td>
+            <td class="mono">${s.rank ?? "-"}</td>
+            <td>${s.hostelType === "GSV" ? "🏨 GSV" : "🏢 Stanza"}${s.optedOutOfGsv ? " (opted out)" : ""}</td>
             <td>${STATUS_META[s.status].label}</td>
             <td class="admin-actions-cell">
               <button class="tiny-btn" data-edit="${s.rollNumber}">Edit</button>
@@ -913,13 +1137,13 @@ function renderAdminStudents(body) {
     </table>
   `;
   body.querySelector("#btn-add-student").onclick = () => adminAddStudentModal();
-  body.querySelectorAll("[data-edit]").forEach((btn) => btn.onclick = () => adminEditStudentModal(studentByRoll(btn.dataset.edit)));
+  body.querySelectorAll("[data-edit]").forEach((btn) => btn.onclick = () => adminEditStudentModal(state.adminData.students.find((s) => s.rollNumber === btn.dataset.edit)));
   body.querySelectorAll("[data-remove]").forEach((btn) => btn.onclick = async () => {
     if (!confirm("Remove this student?")) return;
     try {
       await api(`/api/admin/students/${btn.dataset.remove}`, { method: "DELETE" });
       toast("Student removed");
-      await refreshState();
+      await refreshAdminState();
       renderAdmin();
     } catch (err) { toast("❌ " + err.message); }
   });
@@ -932,6 +1156,13 @@ function adminAddStudentModal() {
       <div class="field"><label>Name</label><input id="add-name" required /></div>
       <div class="field"><label>Roll Number</label><input id="add-roll" class="mono" required /></div>
       <div class="field"><label>Branch</label><input id="add-branch" required /></div>
+      <div class="field"><label>Rank (optional — defaults to the back of the Stanza queue)</label><input id="add-rank" type="number" min="1" /></div>
+      <div class="field"><label>Hostel</label>
+        <select id="add-hostel">
+          <option value="STANZA" selected>Stanza Living</option>
+          <option value="GSV">GSV Campus Hostel</option>
+        </select>
+      </div>
       <button type="submit" class="grad-btn" style="width:100%">Add</button>
     </form>
   `, { onMount: (box) => {
@@ -941,11 +1172,15 @@ function adminAddStudentModal() {
       const name = box.querySelector("#add-name").value.trim();
       const rollNumber = box.querySelector("#add-roll").value.trim();
       const branch = box.querySelector("#add-branch").value.trim();
+      const rankVal = box.querySelector("#add-rank").value;
+      const hostelType = box.querySelector("#add-hostel").value;
       try {
-        await api("/api/admin/students", { method: "POST", body: JSON.stringify({ name, rollNumber, branch }) });
+        await api("/api/admin/students", { method: "POST", body: JSON.stringify({
+          name, rollNumber, branch, hostelType, rank: rankVal ? Number(rankVal) : undefined,
+        }) });
         toast("✅ Student added");
         closeModal();
-        await refreshState();
+        await refreshAdminState();
         renderAdmin();
       } catch (err) { toast("❌ " + err.message); }
     };
@@ -959,6 +1194,14 @@ function adminEditStudentModal(s) {
     <form id="edit-admin-form">
       <div class="field"><label>Name</label><input id="ea-name" value="${escapeHTML(s.name)}" required /></div>
       <div class="field"><label>Branch</label><input id="ea-branch" value="${escapeHTML(s.branch)}" required /></div>
+      <div class="field"><label>Rank</label><input id="ea-rank" type="number" min="1" value="${s.rank ?? ""}" /></div>
+      <div class="field"><label>Hostel</label>
+        <select id="ea-hostel">
+          <option value="GSV" ${s.hostelType === "GSV" ? "selected" : ""}>GSV Campus Hostel</option>
+          <option value="STANZA" ${s.hostelType === "STANZA" ? "selected" : ""}>Stanza Living</option>
+        </select>
+      </div>
+      <p class="hint">Changing hostel here re-runs the waiting-list promotion logic and clears their current group.</p>
       <button type="submit" class="grad-btn" style="width:100%">Save</button>
     </form>
   `, { onMount: (box) => {
@@ -967,11 +1210,15 @@ function adminEditStudentModal(s) {
       e.preventDefault();
       const name = box.querySelector("#ea-name").value.trim();
       const branch = box.querySelector("#ea-branch").value.trim();
+      const rank = box.querySelector("#ea-rank").value;
+      const hostelType = box.querySelector("#ea-hostel").value;
       try {
-        await api(`/api/admin/students/${s.rollNumber}`, { method: "PUT", body: JSON.stringify({ name, branch }) });
+        await api(`/api/admin/students/${s.rollNumber}`, { method: "PUT", body: JSON.stringify({
+          name, branch, rank: rank ? Number(rank) : undefined, hostelType,
+        }) });
         toast("✅ Student updated");
         closeModal();
-        await refreshState();
+        await refreshAdminState();
         renderAdmin();
       } catch (err) { toast("❌ " + err.message); }
     };
@@ -979,15 +1226,15 @@ function adminEditStudentModal(s) {
 }
 
 function renderAdminGroups(body) {
-  if (state.groups.length === 0) {
+  if (state.adminData.groups.length === 0) {
     body.innerHTML = `<div class="empty-state">No groups yet.</div>`;
     return;
   }
-  body.innerHTML = state.groups.map((g) => {
-    const members = g.memberIds.map(studentByRoll).filter(Boolean).map((m) => m.name).join(", ");
+  body.innerHTML = state.adminData.groups.map((g) => {
+    const members = g.memberIds.map((r) => state.adminData.students.find((s) => s.rollNumber === r)).filter(Boolean).map((m) => m.name).join(", ");
     return `
       <div class="card" style="padding:0.9rem;margin-bottom:0.6rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
-        <div><strong>${g.type.toUpperCase()}</strong>${g.locked ? " 🔒" : ""} — ${escapeHTML(members)}</div>
+        <div><strong>${g.hostelType} ${g.type.toUpperCase()}</strong>${g.locked ? " 🔒" : ""} — ${escapeHTML(members)}</div>
         <button class="tiny-btn danger" data-dissolve="${g.id}">Dissolve</button>
       </div>`;
   }).join("");
@@ -996,18 +1243,18 @@ function renderAdminGroups(body) {
     try {
       await api(`/api/admin/groups/${btn.dataset.dissolve}/dissolve`, { method: "POST" });
       toast("Group dissolved");
-      await refreshState();
+      await refreshAdminState();
       renderAdmin();
     } catch (err) { toast("❌ " + err.message); }
   });
 }
 
 function renderAdminRequests(body) {
-  if (state.requests.length === 0) {
+  if (state.adminData.requests.length === 0) {
     body.innerHTML = `<div class="empty-state">No requests yet.</div>`;
     return;
   }
-  body.innerHTML = state.requests.map((r) => `
+  body.innerHTML = state.adminData.requests.map((r) => `
     <div class="card" style="padding:0.9rem;margin-bottom:0.6rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
       <div>
         <strong>${r.type}</strong> — ${escapeHTML(r.fromName)} → ${r.toRoll || r.targetGroupId} · ${r.status} · ${timeAgo(r.timestamp)}
@@ -1017,7 +1264,7 @@ function renderAdminRequests(body) {
   body.querySelectorAll("[data-del-req]").forEach((btn) => btn.onclick = async () => {
     try {
       await api(`/api/admin/requests/${btn.dataset.delReq}`, { method: "DELETE" });
-      await refreshState();
+      await refreshAdminState();
       renderAdmin();
     } catch (err) { toast("❌ " + err.message); }
   });
@@ -1025,18 +1272,48 @@ function renderAdminRequests(body) {
 
 /* ------------------------------ navigation ------------------------------ */
 
+const ALL_MAINS = ["login-gate", "main-home", "main-stanza", "main-admin"];
+
+function hideAllMains() {
+  ALL_MAINS.forEach((id) => document.getElementById(id).classList.add("hidden"));
+}
+
+function showGate() {
+  state.view = "gate";
+  hideAllMains();
+  document.getElementById("login-gate").classList.remove("hidden");
+  renderNavbar();
+}
+
+function enterPortal() {
+  // Route automatically based on the logged-in student's hostel — the
+  // student never manually picks GSV vs Stanza.
+  const me = currentStudent();
+  hideAllMains();
+  if (me && me.hostelType === "STANZA") {
+    state.view = "stanza";
+    document.getElementById("main-stanza").classList.remove("hidden");
+  } else {
+    state.view = "home";
+    document.getElementById("main-home").classList.remove("hidden");
+  }
+  renderAll();
+}
+
 function goHome() {
-  state.view = "home";
-  document.getElementById("main-home").classList.remove("hidden");
-  document.getElementById("main-admin").classList.add("hidden");
-  document.getElementById("nav-links").classList.remove("hidden");
+  if (!state.session) { showGate(); return; }
+  enterPortal();
 }
 function goAdmin() {
   state.view = "admin";
-  document.getElementById("main-home").classList.add("hidden");
+  hideAllMains();
   document.getElementById("main-admin").classList.remove("hidden");
-  document.getElementById("nav-links").classList.add("hidden");
-  renderAdmin();
+  if (state.adminAuthed) {
+    refreshAdminState().then(renderAdmin).catch((err) => { toast("❌ " + err.message); renderAdmin(); });
+  } else {
+    renderAdmin();
+  }
+  renderNavbar();
 }
 function scrollToId(id) {
   const el = document.getElementById(id);
@@ -1049,13 +1326,17 @@ function wireEvents() {
   document.getElementById("btn-home").onclick = goHome;
   document.getElementById("btn-admin").onclick = goAdmin;
   document.getElementById("btn-login").onclick = showLoginModal;
+  document.getElementById("btn-gate-login").onclick = showLoginModal;
   document.getElementById("btn-bell").onclick = showRequestsInbox;
   document.getElementById("btn-logout").onclick = () => {
     state.session = null;
+    state.students = [];
+    state.groups = [];
+    state.requests = [];
     state.notifications = [];
     localStorage.removeItem("gsv_session");
     toast("Logged out");
-    renderAll();
+    showGate();
   };
   document.getElementById("btn-theme").onclick = () => {
     state.theme = state.theme === "light" ? "dark" : "light";
@@ -1077,6 +1358,7 @@ function wireEvents() {
   document.querySelectorAll("[data-scroll]").forEach((btn) => btn.onclick = () => scrollToId(btn.dataset.scroll));
 
   document.getElementById("search-input").oninput = (e) => { state.search = e.target.value; renderDirectory(); };
+  document.getElementById("stanza-search-input").oninput = (e) => { state.stanzaSearch = e.target.value; renderStanzaLooking(); };
   document.getElementById("filter-tabs").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-filter]");
     if (!btn) return;
@@ -1127,6 +1409,20 @@ function wireEvents() {
       return;
     }
 
+    const stanzaLockBtn = e.target.closest("[data-stanza-lock]");
+    if (stanzaLockBtn) {
+      if (!state.session) { showLoginModal(); return; }
+      showStanzaLockConfirmModal(stanzaLockBtn.dataset.stanzaLock);
+      return;
+    }
+
+    const optOutBtn = e.target.closest("[data-opt-out]");
+    if (optOutBtn) {
+      if (!state.session) { showLoginModal(); return; }
+      showOptOutConfirmModal();
+      return;
+    }
+
     const faqItem = e.target.closest("[data-faq]");
     if (faqItem) { faqItem.classList.toggle("open"); return; }
   });
@@ -1137,12 +1433,21 @@ function wireEvents() {
 async function boot() {
   wireEvents();
   applyTheme();
+  if (!state.session) {
+    showGate();
+    return;
+  }
   try {
     await refreshState();
+    enterPortal();
   } catch (err) {
-    toast("❌ Could not reach the server. Is the backend running?");
+    // Stale/invalid cached session — force a fresh login rather than
+    // silently showing an error on a blank portal.
+    state.session = null;
+    localStorage.removeItem("gsv_session");
+    toast("Please log in again");
+    showGate();
   }
-  if (state.view === "admin") renderAdmin();
 }
 
 boot();
