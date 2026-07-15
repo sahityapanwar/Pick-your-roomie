@@ -26,11 +26,15 @@
         </div>
       </button>
 
-      <nav id="nav-links" class="nav-links">
+      <nav id="nav-links" class="nav-links hidden">
         <button data-scroll="directory">Directory</button>
         <button data-scroll="duos">Duos</button>
         <button data-scroll="trios">Trios</button>
         <button data-scroll="faq">FAQ</button>
+      </nav>
+      <nav id="nav-links-stanza" class="nav-links hidden">
+        <button data-scroll="stanza-looking">Looking for Roommate</button>
+        <button data-scroll="stanza-duos">Completed Duos</button>
       </nav>
 
       <div class="nav-actions">
@@ -47,12 +51,25 @@
     </div>
   </header>
 
-  <main id="main-home" class="main-content">
+  <!-- Login gate: shown until a student is authenticated. Nothing else on
+       this page is populated with real data before this point. -->
+  <main id="login-gate" class="main-content gate-main">
+    <section class="hero gate-hero">
+      <div class="pill">🔒 GSV &amp; Stanza Hostel Portal</div>
+      <h1>Log in to see <span class="grad-text">your</span> hostel.</h1>
+      <p class="hero-sub">No directory, requests, or room data is shown until you sign in. Once you log in, you're taken straight to your own hostel's portal — GSV Campus Hostel or Stanza Living — automatically.</p>
+      <div class="hero-actions">
+        <button id="btn-gate-login" class="grad-btn">Log in</button>
+      </div>
+    </section>
+  </main>
+
+  <main id="main-home" class="main-content hidden">
     <!-- Hero -->
     <section class="hero">
-      <div class="pill">✨ Batch of 2029 · New Hostel Allotment</div>
+      <div class="pill">✨ Batch of 2028 · New Hostel Allotment</div>
       <h1>Pick your room, <span class="grad-text">before the room picks for you.</span></h1>
-      <p class="hero-sub">34 triple-sharing rooms. 102 second-year students. Find two roommates you actually want to live with, before allotment finalizes.</p>
+      <p class="hero-sub">GSV Campus Hostel — triple-sharing. Find two roommates you actually want to live with, before allotment finalizes.</p>
       <div class="hero-actions">
         <button id="btn-find-roommates" class="grad-btn">＋ Find Roommates</button>
         <button data-scroll="directory" class="outline-btn">Browse Directory</button>
@@ -62,14 +79,20 @@
     <!-- Stats -->
     <section class="stats-grid" id="stats-grid"></section>
 
-   
+    <!-- Announcement -->
+    <section class="announce-wrap">
+      <div class="announce gsv-glass">
+        <div class="announce-item">📣 Room allotment locks in on 1 August. Form your trio before then to pick who you live with — there's no hostel office matching, it's first-come, first-served.</div>
+        <div class="announce-item">🆕 Tap "Invite" on any looking student's card to send a duo request — or, if you're already in a duo, to propose your third roommate (your partner approves first).</div>
+      </div>
+    </section>
 
     <!-- Directory -->
     <section id="directory" class="section">
       <div class="section-head">
         <div>
           <h2>Student Directory</h2>
-          <p class="muted">All 102 eligible students, live.</p>
+          <p class="muted">GSV Campus Hostel students only, live.</p>
         </div>
       </div>
       <div class="gsv-glass filter-bar">
@@ -121,9 +144,49 @@
     <section class="section contact-section">
       <div class="card contact-card">
         <h2>Need Help?</h2>
-        <p class="muted">If you have any questions about using the website, encounter a bug, or experience any technical issues, please don't hesitate to contact us. We appreciate your feedback and will work to resolve any reported issues as quickly as possible.
+        <p class="muted">Reach the hostel office at <strong>hostel@gsv.edu.in</strong> for anything this page can't resolve.</p>
+      </div>
+    </section>
+  </main>
 
-<br><strong>Email: gsvfellow@gmail.com</strong></p>
+  <!-- Stanza Living portal: only 2 sections, no trios, no hostel-office role. -->
+  <main id="main-stanza" class="main-content hidden">
+    <section class="hero">
+      <div class="pill">🏢 Stanza Living Hostel</div>
+      <h1>Find your <span class="grad-text">one</span> roommate.</h1>
+      <p class="hero-sub">Stanza Living — double-sharing rooms. Pair up with one other student, then lock your duo in whenever you're both sure.</p>
+    </section>
+
+    <section class="stats-grid" id="stanza-stats-grid"></section>
+
+    <!-- Section 1: Looking for roommate -->
+    <section id="stanza-looking" class="section">
+      <div class="section-head">
+        <div>
+          <h2>Students Looking For Roommate</h2>
+          <p class="muted">Stanza Living students only, live.</p>
+        </div>
+      </div>
+      <div class="gsv-glass filter-bar">
+        <div class="search-wrap">
+          <span class="search-icon">🔎</span>
+          <input id="stanza-search-input" placeholder="Search by name or roll number…" />
+        </div>
+      </div>
+      <div id="stanza-looking-grid" class="card-grid"></div>
+    </section>
+
+    <!-- Section 2: Completed duos -->
+    <section id="stanza-duos" class="section">
+      <h2>Completed Duos</h2>
+      <p class="muted">Every finalized Stanza room pair.</p>
+      <div id="stanza-duos-grid" class="card-grid"></div>
+    </section>
+
+    <section class="section contact-section">
+      <div class="card contact-card">
+        <h2>Need Help?</h2>
+        <p class="muted">Reach the hostel office at <strong>hostel@gsv.edu.in</strong> for anything this page can't resolve.</p>
       </div>
     </section>
   </main>
